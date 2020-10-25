@@ -75,7 +75,7 @@ BLYNK_WRITE(V2) { // Modify Scoring Method
     BYSHOTS = true;
     BYDAMAGE = false;
   }
-  if (b==2) { // default mode for score by time
+  if (b==3) { // default mode for score by time
     BYTIME = false;
     BYSHOTS = false;
     BYDAMAGE = true;
@@ -373,37 +373,41 @@ void ClearScores() {
 }
 
 void AddDamage() {
-  if (Posession == 0) {
-    Red = Red + DamageID;
+  if (MaxScore > Red && MaxScore > Ylw && MaxScore > Blu && MaxScore > Grn) {
+    if (Posession == 0) {
+      Red = Red + DamageID;
+      }
+    if (Posession == 1) {
+      Blu = Blu + DamageID;
     }
-  if (Posession == 1) {
-    Blu = Blu + DamageID;
+    if (Posession == 3) {
+      Grn = Grn + DamageID;
+    }
+    if (Posession == 2) {
+      Ylw = Ylw + DamageID;
+    }
+    PostScores();
   }
-  if (Posession == 3) {
-    Grn = Grn + DamageID;
-  }
-  if (Posession == 2) {
-    Ylw = Ylw + DamageID;
-  }
-  PostScores();
 }
 
 void AddPoints() {
-  digitalWrite(led, HIGH);
-  if (Posession == 0) {
-    Red = Red+1;
+  if (MaxScore > Red && MaxScore > Ylw && MaxScore > Blu && MaxScore > Grn) {
+    digitalWrite(led, HIGH);
+    if (Posession == 0) {
+      Red = Red+1;
+    }
+    if (Posession == 1) {
+      Blu = Blu+1;
+    }
+    if (Posession == 3) {
+      Grn = Grn+1;
+    }
+    if (Posession == 2) {
+      Ylw = Ylw+1;
+    }
+    PostScores();
+    digitalWrite(led, LOW);
   }
-  if (Posession == 1) {
-    Blu = Blu+1;
-  }
-  if (Posession == 3) {
-    Grn = Grn+1;
-  }
-  if (Posession == 2) {
-    Ylw = Ylw+1;
-  }
-  PostScores();
-  digitalWrite(led, LOW);
 }
 
 void PostScores() {
@@ -439,7 +443,9 @@ void loop()
 {
   Blynk.run();
   if (BYTIME) {
+    if (Posession != 99) {
     ScoreAccumulator.run();
+    }
   }
   IRScanner.run();
 }
