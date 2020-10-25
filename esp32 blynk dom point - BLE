@@ -1,0 +1,445 @@
+
+#define BLYNK_PRINT Serial
+
+#define BLYNK_USE_DIRECT_CONNECT
+
+#include <BlynkSimpleEsp32_BLE.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+
+// You should get Auth Token in the Blynk App.
+// Go to the Project Settings (nut icon).
+char auth[] = "CL--V39yclPNHj0Ekmj-Q7XPhjPVawGZ";
+int Posession = 99; // Red, Yellow, Green, Blue
+int Red = 0; // points
+int Blu = 0; // points
+int Grn = 0; // points
+int Ylw = 0; // points
+int MaxScore = 32700; // sets maximum integer value for scoring to around 8 hours
+bool BYSHOTS = false; // default game scoring
+bool BYTIME = true; // default game scoring
+bool BYDAMAGE = false; // default game scoring
+
+// Define Variables used for the game functions for the BRX
+int A[4]; // since this is device A we are using A to define the scores
+int team=0; // this is for team recognition, team 1 = red, team 2 = blue, team 3 = green
+int gamestatus=0; // used to turn the ir reciever procedure on and off
+int PlayerID=0; // used to identify player
+int PID[6]; // used for recording player bits for ID decifering
+int DamageID=0; // used to identify weapon
+int ShotType=0; // used to identify shot type
+int F4A[64]; // used for free for all scoring
+int DID[8]; // used for recording weapon bits for ID decifering
+int BID[4]; // used for recording shot type bits for ID decifering
+const byte IR_Sensor_Pin = 16; // this is int input pin for ir receiver
+int B[4]; // bullet type bits for decoding Ir
+int P[6]; // Player bits for decoding player id
+int T[2]; // team bits for decoding team 
+int D[8]; // damage bits for decoding damage
+int C[1]; // Critical hit on/off from IR
+int U[2]; // Power bits
+int Z[2]; // parity bits depending on number of 1s in ir
+int X[1]; // bit to used to confirm brx ir is received
+
+BlynkTimer ScoreAccumulator; // created a timer object called "ScoreAccumulator"
+BlynkTimer IRScanner; // created a timer object called "IRScanner"
+
+const int led = 2; // ESP32 Pin to which onboard LED is connected
+
+BLYNK_WRITE(V0) { // clear scores, start over
+  digitalWrite(led, HIGH);
+  int b=param.asInt();
+  if (b==1) {
+    ClearScores();
+  }
+  digitalWrite(led, LOW);
+}
+BLYNK_WRITE(V1) { // stop game, freeze points
+  digitalWrite(led, HIGH);
+  int b=param.asInt();
+  if (b==1) {
+    Posession = 99;
+  }
+  digitalWrite(led, LOW);
+}
+BLYNK_WRITE(V2) { // Modify Scoring Method
+  digitalWrite(led, HIGH);
+  int b=param.asInt();
+  if (b==1) { // default mode for score by time
+    BYTIME = true;
+    BYSHOTS = false;
+    BYDAMAGE = false;
+  }
+  if (b==2) { // default mode for score by time
+    BYTIME = false;
+    BYSHOTS = true;
+    BYDAMAGE = false;
+  }
+  if (b==2) { // default mode for score by time
+    BYTIME = false;
+    BYSHOTS = false;
+    BYDAMAGE = true;
+  }
+  digitalWrite(led, LOW);
+}
+BLYNK_WRITE(V3) { // stop game, freeze points
+  digitalWrite(led, HIGH);
+  int b=param.asInt();
+  if (b==1) { // unlimited time but really around 8 hours
+    MaxScore = 32700;
+  }
+  if (b==2) { // three minutes or 180 seconds/shots/damage
+    MaxScore = 180;
+  }
+  if (b==3) { // 5 minutes or 300 seconds/shots/damage
+    MaxScore = 300;
+  }
+  if (b==4) { // 10 minutes or 600 shots/seconds/damage
+    MaxScore = 600;
+  }
+  if (b==5) { // 20 minutes or 1200 shots/seconds/damage
+    MaxScore = 1200;
+  }
+  if (b==6) { // 40 minutes or 2400 shots/seconds/damage
+    MaxScore = 2400;
+  }
+  if (b==7) { // 80 minutes or 4800 shots/seconds/damage
+    MaxScore = 4800;
+  }
+  if (b==8) { // 9600 minutes or 600 shots/seconds/damage
+    MaxScore = 9600;
+  }
+  digitalWrite(led, LOW);
+}
+//******************************************************************************************************************************************************************************************
+void PrintTag() {
+  // prints each individual bit on serial monitor
+  // typically not used but used for troubleshooting
+  Serial.println("TagReceived!!");
+  Serial.print("B0: "); Serial.println(B[0]);
+  Serial.print("B1: "); Serial.println(B[1]);
+  Serial.print("B2: "); Serial.println(B[2]);
+  Serial.print("B3: "); Serial.println(B[3]);
+  Serial.print("P0: "); Serial.println(P[0]);
+  Serial.print("P1: "); Serial.println(P[1]);
+  Serial.print("P2: "); Serial.println(P[2]);
+  Serial.print("P3: "); Serial.println(P[3]);
+  Serial.print("P4: "); Serial.println(P[4]);
+  Serial.print("P5: "); Serial.println(P[5]);
+  Serial.print("T0: "); Serial.println(T[0]);
+  Serial.print("T1: "); Serial.println(T[1]);
+  Serial.print("D0: "); Serial.println(D[0]);
+  Serial.print("D1: "); Serial.println(D[1]);
+  Serial.print("D2: "); Serial.println(D[2]);
+  Serial.print("D3: "); Serial.println(D[3]);
+  Serial.print("D4: "); Serial.println(D[4]);
+  Serial.print("D5: "); Serial.println(D[5]);
+  Serial.print("D6: "); Serial.println(D[6]);
+  Serial.print("D7: "); Serial.println(D[7]);
+  Serial.print("C0: "); Serial.println(C[0]);
+  Serial.print("U0: "); Serial.println(U[0]);
+  Serial.print("U1: "); Serial.println(U[1]);
+  Serial.print("Z0: "); Serial.println(Z[0]);
+  Serial.print("Z1: "); Serial.println(Z[1]);
+}
+//******************************************************************************************************************************************************************************************
+//******************************************************************************************************************************************************************************************
+// this procedure breaksdown each Weapon bit of the brx ir signal recieved and assigns the applicable bit value then adds them together to identify the player ID (1-64)
+void IDDamage() {
+      // determining indivudual protocol values for Weapon ID bits
+      if (D[7] > 750) {
+        DID[0] = 2;
+      } else {
+        DID[0] = 1;
+      }
+      if (D[6] > 750) {
+        DID[1]=2;
+      } else {
+        DID[1]=0;
+      }
+      if (D[5] > 750) {
+        DID[2]=4;
+        } else {
+        DID[2]=0;
+      }
+      if (D[4] > 750) {
+        DID[3]=8;
+      } else {
+        DID[3]=0;
+      }
+      if (D[3] > 750) {
+        DID[4]=16;
+      } else {
+        DID[4]=0;
+      }
+      if (D[2] > 750) {
+        DID[5]=32;
+      } else {
+        DID[5]=0;
+      }
+      if (D[1] > 750) {
+        DID[6]=64;
+      } else {
+        DID[6]=0;
+      }
+      if (D[0] > 750) {
+        DID[7]=128;
+      } else {
+        DID[7]=0;
+      }
+      // ID Damage by summing assigned values above based upon protocol values (1-64)
+      DamageID=DID[0]+DID[1]+DID[2]+DID[3]+DID[4]+DID[6]+DID[7];
+      Serial.print("Damage ID = ");
+      Serial.println(DamageID);
+}
+//******************************************************************************************************************************************************************************************
+//******************************************************************************************************************************************************************************************
+// this procedure breaksdown each bullet bit of the brx ir signal recieved and assigns the applicable bit value then adds them together to identify the player ID (1-64)
+void IDShot() {
+      // determining indivudual protocol values for Weapon ID bits
+      if (B[3] > 750) {
+        BID[0] = 2;
+      } else {
+        BID[0] = 1;
+      }
+      if (B[2] > 750) {
+        BID[1]=2;
+      } else {
+        BID[1]=0;
+      }
+      if (B[1] > 750) {
+        BID[2]=4;
+        } else {
+        BID[2]=0;
+      }
+      if (B[0] > 750) {
+        BID[3]=8;
+      } else {
+        BID[3]=0;
+      }
+      // ID Player by summing assigned values above based upon protocol values (1-64)
+      ShotType=BID[0]+BID[1]+BID[2]+BID[3];
+      Serial.print("Shot Type = ");
+      Serial.println(ShotType);      
+}
+//******************************************************************************************************************************************************************************************
+//******************************************************************************************************************************************************************************************
+// this procedure breaksdown each player bit of the brx ir signal recieved and assigns the applicable bit value then adds them together to identify the player ID (1-64)
+void IDplayer() {
+      // determining indivudual protocol values for player ID bits
+      // Also assign IR values for sending player ID with device originated tags
+      if (P[5] > 750) {
+        PID[0] = 2;
+      } else {
+        PID[0] = 1;
+      }
+      if (P[4] > 750) {
+        PID[1]=2;
+      } else {
+        PID[1]=0;
+      }
+      if (P[3] > 750) {
+        PID[2]=4;
+        } else {
+        PID[2]=0;
+      }
+      if (P[2] > 750) {
+        PID[3]=8;
+      } else {
+        PID[3]=0;
+      }
+      if (P[1] > 750) {
+        PID[4]=16;
+      } else {
+        PID[4]=0;
+      }
+      if (P[0] > 750) {
+        PID[5]=32;
+      } else {
+        PID[5]=0;
+      }
+      // ID Player by summing assigned values above based upon protocol values (1-64)
+      PlayerID=PID[0]+PID[1]+PID[2]+PID[3]+PID[4]+PID[5];
+      Serial.print("Player ID = ");
+      Serial.println(PlayerID);      
+}
+//******************************************************************************************************************************************************************************************
+//******************************************************************************************************************************************************************************************
+void teamID() {
+      // check if the IR is from Red team
+      if (T[0] < 750 && T[1] < 750) {
+      // sets the current team as red
+      team = 1;
+      Serial.print("team = Red = ");
+      Serial.println(team);
+      Posession = 0;
+      }
+      // check if the IR is from blue team 
+      if (T[0] < 750 && T[1] > 750) {
+      // sets the current team as blue
+      team = 2;
+      Serial.print("team = Blue = ");
+      Serial.println(team);
+      Posession = 1;
+      }
+      // check if the IR is from green team 
+      if (T[0] > 750 && T[1] > 750) {
+      // sets the current team as green
+      team = 3;
+      Serial.print("team = Green = ");
+      Serial.println(team);
+      Posession = 3;
+      }
+      if (T[0] > 750 && T[1] < 750) {
+      // sets the current team as red
+      team = 4;
+      Serial.print("team = Yellow = ");
+      Serial.println(team);
+      Posession = 2;
+      }
+}
+//******************************************************************************************************************************************************************************************
+
+//******************************************************************************************************************************************************************************************
+// This procedure uses the preset IR_Sensor_Pin to determine if an ir received is BRX, if so it records the protocol received
+void receiveBRXir() {
+  // makes the action below happen as it cycles through the 25 bits as was delcared above
+  for (byte x = 0; x < 4; x++) B[x]=0;
+  for (byte x = 0; x < 6; x++) P[x]=0;
+  for (byte x = 0; x < 2; x++) T[x]=0;
+  for (byte x = 0; x < 8; x++) D[x]=0;
+  for (byte x = 0; x < 1; x++) C[x]=0;
+  for (byte x = 0; x < 2; x++) U[x]=0;
+  for (byte x = 0; x < 2; x++) Z[x]=0;
+  // checks for a 2 millisecond sync pulse signal with a tollerance of 500 microsecons
+  // Serial.println("IR input set up.... Ready!...");
+  if (pulseIn(IR_Sensor_Pin, LOW, 150000) > 1500) { // checks that the incoming IR matchets BRX protocols
+      digitalWrite(led, HIGH);
+      // stores each pulse or bit, individually for analyzing the data
+      B[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // B1
+      B[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // B2
+      B[2] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // B3
+      B[3] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // B4
+      P[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P1
+      P[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P2
+      P[2] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P3
+      P[3] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P4
+      P[4] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P5
+      P[5] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // P6
+      T[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // T1
+      T[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // T2
+      D[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D1
+      D[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D2
+      D[2] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D3
+      D[3] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D4
+      D[4] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D5
+      D[5] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D6
+      D[6] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D7
+      D[7] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // D8
+      C[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // C1
+      U[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // ?1
+      U[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // ?2
+      Z[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // Z1
+      Z[1] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // Z2
+      X[0] = (pulseIn(IR_Sensor_Pin, LOW, 5000)); // X1
+      if (Z[1] > 250 && X[0] < 250 && B[0] < 1250) { // checks to make sure it is a BRX tag
+        PrintTag();
+        teamID();
+        IDplayer();
+        IDShot();
+        IDDamage();
+        if (BYSHOTS) {
+          AddPoints();
+          digitalWrite(led, HIGH);
+        }
+        if (BYDAMAGE) {
+          AddDamage();
+        }
+        }
+      digitalWrite(led, LOW);
+      }
+}
+//******************************************************************************************************************************************************************************************
+
+
+void ClearScores() {
+  Posession = 99;
+  Red = 0;
+  Blu = 0;
+  Grn = 0;
+  Ylw = 0;
+  PostScores();
+  
+}
+
+void AddDamage() {
+  if (Posession == 0) {
+    Red = Red + DamageID;
+    }
+  if (Posession == 1) {
+    Blu = Blu + DamageID;
+  }
+  if (Posession == 3) {
+    Grn = Grn + DamageID;
+  }
+  if (Posession == 2) {
+    Ylw = Ylw + DamageID;
+  }
+  PostScores();
+}
+
+void AddPoints() {
+  digitalWrite(led, HIGH);
+  if (Posession == 0) {
+    Red = Red+1;
+  }
+  if (Posession == 1) {
+    Blu = Blu+1;
+  }
+  if (Posession == 3) {
+    Grn = Grn+1;
+  }
+  if (Posession == 2) {
+    Ylw = Ylw+1;
+  }
+  PostScores();
+  digitalWrite(led, LOW);
+}
+
+void PostScores() {
+  digitalWrite(led, HIGH);
+  Blynk.virtualWrite(V100, Red);
+  Blynk.virtualWrite(V101, Blu);
+  Blynk.virtualWrite(V102, Grn);
+  Blynk.virtualWrite(V103, Ylw);
+  digitalWrite(led, LOW);
+}
+
+void setup()
+{
+  // Debug console
+  Serial.begin(9600);
+
+  Serial.println("Waiting for connections...");
+
+  Blynk.setDeviceName("Blynk");
+
+  Blynk.begin(auth);
+
+  pinMode(led, OUTPUT); // I'm turning on the led so that it is visible anytime something is tying up the processor.
+  
+  ScoreAccumulator.setInterval(1000L, AddPoints); // Reading data from LoRa constantly
+  IRScanner.setInterval(1L, receiveBRXir); // Reading data from LoRa constantly
+
+  // Get IR Reciever pin set up
+  pinMode(IR_Sensor_Pin, INPUT);
+}
+
+void loop()
+{
+  Blynk.run();
+  if (BYTIME) {
+    ScoreAccumulator.run();
+  }
+  IRScanner.run();
+}
